@@ -1,0 +1,5 @@
+#!/bin/bash
+# octt [file ...]  opens the app; octt <command> ... runs the terminal interface (see `octt solve -h`)
+root="$(dirname "$(readlink -f "$0")")/.."
+py="$root/.venv/bin/python"; [ -x "$py" ] || py=python3
+PYTHONPATH="$root" exec "$py" -m octt "$@"
