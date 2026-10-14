@@ -6,7 +6,7 @@ import os
 
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QAction, QActionGroup, QIcon, QKeySequence, QPalette, QShortcut, QUndoStack
-from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QFrame, QHeaderView, QInputDialog, QLabel, QListWidget,
+from PySide6.QtWidgets import (QApplication, QDialog, QFileDialog, QFrame, QHeaderView, QLabel, QListWidget,
                                QListWidgetItem, QMainWindow, QMenu, QMessageBox, QPushButton, QSplitter,
                                QStyle, QTableWidget, QTableWidgetItem, QTabWidget, QToolBar, QTreeWidget,
                                QTreeWidgetItem, QVBoxLayout, QWidget)
@@ -19,8 +19,10 @@ from octt.model import Document
 from octt.rules.place import bad_slots, plan_place, plan_unplace, set_locked
 from octt.rules.soft import label as soft_label, score, total
 from octt.ui import language
-from octt.ui.dialogs import CourseDialog, EpDialog, RoomDialog, SettingsDialog, TeacherDialog
+from octt.ui.dialogs import KINDS, EditDialog, SettingsDialog
+from octt.ui.freetime_dialog import FreeTimeDialog
 from octt.ui.grid import Block, Grid, LessonList, swatch
+from octt.ui.manage import ManageDialog
 from octt.ui.newdoc_dialog import NewDocumentDialog
 from octt.ui.report_dialog import ReportDialog
 from octt.ui.solve_dialog import SolveDialog
@@ -42,6 +44,7 @@ class MainWindow(QMainWindow):
         self._actions: list[QAction] = []
         self.path: str | None = None
         self.undo = QUndoStack(self)
+        self.manager: ManageDialog | None = None  # created on first use
         self.undo.cleanChanged.connect(self._modified)
         self._build_widgets()
         self._build_actions()
@@ -65,17 +68,24 @@ class MainWindow(QMainWindow):
         self.todo = LessonList()
         left = QWidget()
         lay = self.left_lay = QVBoxLayout(left)
-        lay.addWidget(self.tabs, 3)
-        lay.addWidget(self.todo_title)
-        lay.addWidget(self.todo, 2)
+        bottom = QWidget()
+        bl = QVBoxLayout(bottom)
+        bl.setContentsMargins(0, 0, 0, 0)
+        bl.addWidget(self.todo_title)
+        bl.addWidget(self.todo)
+        self.left_split = QSplitter(Qt.Vertical)
+        self.left_split.addWidget(self.tabs)
+        self.left_split.addWidget(bottom)
+        self.left_split.setStretchFactor(0, 3)
+        self.left_split.setStretchFactor(1, 2)
+        self.left_split.setChildrenCollapsible(False)
+        lay.addWidget(self.left_split)
 
         self.title_lbl, self.summary_lbl, self.banner = QLabel(), QLabel(), QLabel()
         f = self.title_lbl.font()
         f.setPointSizeF(f.pointSizeF() * 1.5)
         f.setBold(True)
         self.title_lbl.setFont(f)
-        for lbl in (self.title_lbl, self.summary_lbl):
-            lbl.setAlignment(Qt.AlignLeading | Qt.AlignVCenter)  # follows the layout direction, even for Latin text
         self.summary_lbl.setForegroundRole(QPalette.PlaceholderText)  # palette roles, not stylesheets: they follow the theme
         self.banner.setWordWrap(True)
         self.banner.setFrameShape(QFrame.StyledPanel)
@@ -136,6 +146,9 @@ class MainWindow(QMainWindow):
         """Switch the UI language live: persists the choice, mirrors the layout for Arabic, rebuilds the texts."""
         language.apply(code)
         self.prefs.setValue("language", i18n.language())
+        if self.manager:  # rebuilt in the new language next time it opens
+            self.manager.deleteLater()
+            self.manager = None
         self.retranslate()
 
     def retranslate(self, rebuild_actions: bool = True):
@@ -151,6 +164,8 @@ class MainWindow(QMainWindow):
         rtl = i18n.is_rtl()
         self.left_lay.setContentsMargins(*((0, 6, 6, 6) if rtl else (6, 6, 0, 6)))
         self.right_lay.setContentsMargins(*((6, 6, 0, 6) if rtl else (0, 6, 6, 6)))
+        for lbl in (self.title_lbl, self.summary_lbl):  # plain text aligns by its own script: pin it, or a Latin name sits left in Arabic
+            lbl.setAlignment(Qt.AlignAbsolute | (Qt.AlignRight if rtl else Qt.AlignLeft) | Qt.AlignVCenter)
         for i, key in enumerate((N_("Classes"), N_("Teachers"), N_("Rooms"))):
             self.tabs.setTabText(i, tr(key))
         for w in (self.tree, self.teachers, self.rooms):
@@ -194,9 +209,13 @@ class MainWindow(QMainWindow):
         delete = self._act(N_("&Delete selected"), self.delete_selected)
         solve = self._act(N_("&Solve automatically…"), self.solve, "F5", ("system-run", S.SP_MediaPlay),
                           N_("Let the solver place the remaining lessons"))
+        free = self._act(N_("Find &free time…"), self.find_free_time, "Ctrl+Shift+F",
+                         tip=N_("Where an extra session fits now: class, teacher and a room all free"))
         settings = self._act(N_("S&ettings…"), self.settings, "Ctrl+,")
         props = self._act(N_("Timetable &properties…"), self.properties)
         breakdown = self._act(N_("Score &breakdown…"), self.show_score)
+        manage = self._act(N_("&Manage data…"), self.manage, "Ctrl+M", ("x-office-address-book", S.SP_FileDialogListView),
+                           N_("Groups, classes, teachers, rooms and courses: search, add, edit, duplicate, delete"))
 
         mb = self.menuBar()
         f = mb.addMenu(tr("&File"))
@@ -209,13 +228,15 @@ class MainWindow(QMainWindow):
         e.addSeparator()
         e.addActions([edit, delete, props])
         dm = mb.addMenu(tr("&Data"))
+        dm.addAction(manage)
+        dm.addSeparator()
         for text, fn in ((N_("Add &group"), self.add_group), (N_("Add &class"), self.add_class),
                          (N_("Add c&ourse"), self.add_course), (N_("Add &teacher"), self.add_teacher),
                          (N_("Add &room"), self.add_room)):
             dm.addAction(self._act(text, fn))
         dm.setMinimumWidth(max(dm.fontMetrics().horizontalAdvance(a.text()) for a in dm.actions()) + 80)  # no icon/shortcut column here, so some styles size it too tight
         tm = mb.addMenu(tr("&Tools"))
-        tm.addActions([solve, settings, breakdown])
+        tm.addActions([solve, free, settings, breakdown])
         lm = tm.addMenu(tr("&Language"))  # names stay in their own script so a lost user can always find theirs
         group = QActionGroup(lm)
         for code, name in LANGUAGES.items():
@@ -233,7 +254,7 @@ class MainWindow(QMainWindow):
         self.toolbar = tb
         tb.setMovable(False)
         tb.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        for x in (new, opn, save, None, undo, redo, None, solve, pdf):
+        for x in (new, opn, save, None, undo, redo, None, manage, solve, pdf):
             tb.addSeparator() if x is None else tb.addAction(x)
         self.addToolBar(tb)
 
@@ -248,6 +269,9 @@ class MainWindow(QMainWindow):
             self.split.restoreState(s)
 
     def closeEvent(self, e):
+        if self.manager and self.manager.isVisible() and not self.manager.close():  # it asks about an unsaved form
+            e.ignore()
+            return
         if self.maybe_save():
             self.prefs.setValue("geometry", self.saveGeometry())
             self.prefs.setValue("splitter", self.split.saveState())
@@ -274,6 +298,8 @@ class MainWindow(QMainWindow):
             self.prefs.setValue("recent", push_recent(self.recent(), path))
         self.refresh()
         self._retitle()
+        if self.manager and self.manager.isVisible():
+            self.manager.reload(force=True)
 
     def recent(self) -> list[str]:
         v = self.prefs.value("recent") or []
@@ -309,11 +335,11 @@ class MainWindow(QMainWindow):
             return
         try:
             doc = io.load(path)
-        except (OSError, ValueError, KeyError, TypeError) as e:
+        except (OSError, ValueError) as e:
             QMessageBox.critical(self, tr("Cannot open file"),
                                  tr("{name} is not a valid timetable.", name=os.path.basename(path)) + f"\n\n{e}")
             return
-        imported = not path.lower().endswith(".json") and open(path, "rb").read(64).lstrip(b"\xef\xbb\xbf \r\n").startswith(b"<")
+        imported = io.is_octt(path)
         self.load(doc, None if imported else path)  # an OpenCTT file is converted: Save asks for a new .json, never overwrites the original
         if imported:
             self.undo.resetClean()
@@ -393,7 +419,14 @@ class MainWindow(QMainWindow):
     def structure_changed(self):
         self.grid.set_dims(self.doc.days, self.doc.terms)
         self._build()
+        self.placements_changed()
+
+    def placements_changed(self):
+        """After any edit, undo or redo: the view, and the tables of the data manager if it is open.
+        (Called by the undo commands, never by a signal, so it cannot fire while the window is being torn down.)"""
         self.refresh()
+        if self.manager and self.manager.isVisible():
+            self.manager.reload()
 
     def _tab_changed(self, i: int):
         w = self.tabs.widget(i)
@@ -477,83 +510,112 @@ class MainWindow(QMainWindow):
         self.todo.set_target(src is not None)  # a placed lesson can be dropped on the list to take it off
 
     # --- data dialogs -------------------------------------------------------------------------
-    def apply(self, text, mutate) -> bool:
+    def try_apply(self, text, mutate) -> list[str]:
+        """Validate `mutate`, then apply it as one undoable step. Returns what blocked it (empty = applied)."""
         problems = ops.trial(self.doc, mutate)
+        if not problems:
+            before = snapshot(self.doc)
+            mutate(self.doc)
+            self.undo.push(StateEdit(self.doc, before, snapshot(self.doc), text, self.structure_changed))
+        return problems
+
+    def apply(self, text, mutate) -> bool:
+        problems = self.try_apply(text, mutate)
         if problems:
             self.statusBar().showMessage("; ".join(problems[:3]), 6000)
-            return False
-        before = snapshot(self.doc)
-        mutate(self.doc)
-        self.undo.push(StateEdit(self.doc, before, snapshot(self.doc), text, self.structure_changed))
-        return True
+        return not problems
 
-    def _group_id(self):
+    def edit(self, kind: str, id_: int | None = None, **defaults) -> bool:
+        """Add (id_=None) or edit one group / class / teacher / room / course in a dialog, as one undo step."""
+        k = KINDS[kind]
+        entity = getattr(self.doc, k.table)[id_] if id_ is not None else None
+        dlg = EditDialog(self, k.editor(self.doc, entity, **defaults))
+        return bool(dlg.exec()) and self.apply(tr(k.add if id_ is None else k.edit), lambda d: k.editor.save(d, dlg.entity))
+
+    def delete(self, kind: str, *ids: int) -> list[str]:
+        """Delete entities as one undo step; all or none. Returns why it was refused (empty = deleted, or the user said no)."""
+        if len(ids) > 1:
+            question = tr("Delete these {n} items?", n=len(ids))
+        elif kind == "course" and any(p.course_id == ids[0] for p in self.doc.placements):
+            question = tr("This course has placed lessons. Delete anyway?")
+        else:
+            question = None
+        if question and QMessageBox.question(self, tr("Delete"), question) != QMessageBox.Yes:
+            return []
+        k = KINDS[kind]
+        text = tr(k.delete) if len(ids) == 1 else f"{tr(k.delete)} ({len(ids)})"
+        return self.try_apply(text, lambda d: [k.remove(d, i) for i in ids])
+
+    def find_free_time(self):
+        if not self.doc.eps or not self.doc.teachers:
+            return self.statusBar().showMessage(tr("A course needs a class and a teacher first"), 6000)
+        kind, id_ = self.view or (None, None)
+        dlg = FreeTimeDialog(self, ep_id=id_ if kind == "class" else None, teacher_id=id_ if kind == "teacher" else None)
+        if dlg.exec():
+            self.show_view(("class", self.doc.courses[dlg.booked].ep_id))  # the new, locked lessons in place
+
+    def manage(self, kind: str | None = None, id_: int | None = None):
+        if self.manager is None:
+            self.manager = ManageDialog(self)
+        elif not self.manager.isVisible():
+            self.manager.reload(force=True)  # closing it checked for unsaved forms, so nothing is lost
+        if kind:
+            self.manager.show_kind(kind, id_)
+        self.manager.show()
+        self.manager.raise_()
+        self.manager.activateWindow()
+
+    def show_view(self, view: views.View):
+        """Bring up the timetable of one class / teacher / room."""
+        kind, id_ = view
+        if kind == "class":
+            self.tabs.setCurrentIndex(0)
+            self.tree.setCurrentItem(self.ep_items[id_])
+        else:
+            lst = self.teachers if kind == "teacher" else self.rooms
+            self.tabs.setCurrentWidget(lst)
+            lst.setCurrentRow(next(i for i in range(lst.count()) if lst.item(i).data(KIND)[1] == id_))
+        self.raise_()
+        self.activateWindow()
+
+    def _group_id(self) -> int | None:
+        """The group selected in the tree (or the one holding the selected class / course)."""
         sel = self.tree.currentItem()
         while sel and sel.data(0, KIND)[0] != "epg":
             sel = sel.parent()
-        if sel:
-            return sel.data(0, KIND)[1]
-        names = {g.name: g.id for g in self.doc.epgs.values()}
-        if not names:
-            self.statusBar().showMessage(tr("Add a group first"), 4000)
-            return None
-        if len(names) == 1:
-            return next(iter(names.values()))
-        name, ok = QInputDialog.getItem(self, tr("Class"), tr("Group:"), list(names), editable=False)
-        return names[name] if ok else None
+        return sel.data(0, KIND)[1] if sel else None
 
     def add_group(self):
-        name, ok = QInputDialog.getText(self, tr("Add group"), tr("Name (a grade, year or faculty):"))
-        if ok:
-            self.apply(tr("Add group"), lambda d: ops.add_group(d, name.strip()))
+        self.edit("epg")
 
     def add_class(self):
-        if (gid := self._group_id()) is None:
-            return
-        name, ok = QInputDialog.getText(self, tr("Add class"), tr("Name (e.g. 5A):"))
-        if ok:
-            self.apply(tr("Add class"), lambda d: ops.add_ep(d, gid, name.strip()))
+        if not self.doc.epgs:
+            self.statusBar().showMessage(tr("Add a group first"), 4000)
+        else:
+            self.edit("ep", epg_id=self._group_id())
 
     def add_course(self):
         if not self.doc.eps or not self.doc.teachers:
             self.statusBar().showMessage(tr("A course needs a class and a teacher first"), 4000)
-        elif (dlg := CourseDialog(self, self.doc, ep_id=self.view[1] if self.view and self.view[0] == "class" else None)).exec():
-            self.apply(tr("Add course"), lambda d: ops.save_course(d, dlg.entity))
+        else:
+            self.edit("course", ep_id=self.view[1] if self.view and self.view[0] == "class" else None)
 
     def add_teacher(self):
-        if (dlg := TeacherDialog(self, self.doc)).exec():
-            self.apply(tr("Add teacher"), lambda d: ops.save_teacher(d, dlg.entity))
+        self.edit("teacher")
 
     def add_room(self):
-        if (dlg := RoomDialog(self, self.doc)).exec():
-            self.apply(tr("Add room"), lambda d: ops.save_room(d, dlg.entity))
+        self.edit("room")
 
     def edit_course(self, cid: int):
-        if (dlg := CourseDialog(self, self.doc, self.doc.courses[cid])).exec():
-            self.apply(tr("Edit course"), lambda d: ops.save_course(d, dlg.entity))
+        self.edit("course", cid)
 
     def edit_selected(self):
-        kind, id_ = self._current() or (None, None)
-        doc = self.doc
-        if kind == "course":
-            self.edit_course(id_)
-        elif kind == "ep" and (dlg := EpDialog(self, doc, doc.eps[id_])).exec():
-            self.apply(tr("Edit class"), lambda d: ops.save_ep(d, dlg.entity))
-        elif kind == "teacher" and (dlg := TeacherDialog(self, doc, doc.teachers[id_])).exec():
-            self.apply(tr("Edit teacher"), lambda d: ops.save_teacher(d, dlg.entity))
-        elif kind == "room" and (dlg := RoomDialog(self, doc, doc.rooms[id_])).exec():
-            self.apply(tr("Edit room"), lambda d: ops.save_room(d, dlg.entity))
+        if cur := self._current():
+            self.edit(*cur)
 
     def delete_selected(self):
-        kind, id_ = self._current() or (None, None)
-        fn = {"course": ops.delete_course, "teacher": ops.delete_teacher, "room": ops.delete_room}.get(kind)
-        if not fn:
-            return
-        if kind == "course" and any(p.course_id == id_ for p in self.doc.placements):
-            if QMessageBox.question(self, tr("Delete"), tr("This course has placed lessons. Delete anyway?")) != QMessageBox.Yes:
-                return
-        self.apply(tr({"course": N_("Delete course"), "teacher": N_("Delete teacher"), "room": N_("Delete room")}[kind]),
-                   lambda d: fn(d, id_))
+        if (cur := self._current()) and (problems := self.delete(*cur)):
+            self.statusBar().showMessage("; ".join(problems[:3]), 6000)
 
     def _menu(self, pos):
         w = self.tabs.currentWidget()
@@ -563,11 +625,12 @@ class MainWindow(QMainWindow):
                1: [(N_("Add teacher…"), self.add_teacher)], 2: [(N_("Add room…"), self.add_room)]}[self.tabs.currentIndex()]
         for text, fn in add:
             m.addAction(self._act(text, fn))
-        if kind in ("course", "teacher", "room", "ep"):
+        if kind:
+            id_ = self._current()[1]
             m.addSeparator()
             m.addAction(self._act(N_("Edit…"), self.edit_selected))
-            if kind != "ep":
-                m.addAction(self._act(N_("Delete"), self.delete_selected))
+            m.addAction(self._act(N_("Delete"), self.delete_selected))
+            m.addAction(self._act(N_("Open in data manager"), lambda: self.manage(kind, id_)))
         m.exec(w.viewport().mapToGlobal(pos))
 
     # --- tools --------------------------------------------------------------------------------
@@ -599,7 +662,7 @@ class MainWindow(QMainWindow):
         if dlg.exec() and dlg.result:
             res = dlg.result
             remove = list(res.removes)
-            self.undo.push(PlacementEdit(self.doc, remove, res.placements, tr("Automatic timetable"), self.refresh))
+            self.undo.push(PlacementEdit(self.doc, remove, res.placements, tr("Automatic timetable"), self.placements_changed))
 
     def show_score(self):
         pens = sorted(score(self.doc), key=lambda p: -p.amount)
@@ -623,7 +686,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("; ".join(errors), 5000)
         elif add:
             text = tr("Move {course}" if src else "Place {course}", course=views.course_name(self.doc.courses[cid]))
-            self.undo.push(PlacementEdit(self.doc, remove, add, text, self.refresh))
+            self.undo.push(PlacementEdit(self.doc, remove, add, text, self.placements_changed))
 
     def unplace(self, cid, src):
         remove = plan_unplace(self.doc, cid, *src)
@@ -631,7 +694,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(tr("locked: unlock it first"), 5000)
         elif remove:
             self.undo.push(PlacementEdit(self.doc, remove, [],
-                                         tr("Remove {course}", course=views.course_name(self.doc.courses[cid])), self.refresh))
+                                         tr("Remove {course}", course=views.course_name(self.doc.courses[cid])), self.placements_changed))
 
     def lock(self, cid, term, day, locked):
         before = snapshot(self.doc)

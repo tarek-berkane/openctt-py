@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from octt.i18n import N_, t as tr
 from octt.model import Document
 
-PARAMS = {  # defaults from the original SCBaseSettings (teacher_days=1 is the original's, odd but faithful)
-    "teacher_days": 1, "teacher_daily": 4, "teacher_continuous": 4,
-    "student_days": 6, "student_daily": 7, "student_continuous": 6,
+PARAMS = {  # defaults from the original SCBaseSettings, except the *_days limits: see defaults()
+    "teacher_days": 7, "teacher_daily": 4, "teacher_continuous": 4,
+    "student_days": 7, "student_daily": 7, "student_continuous": 6,
     "student_gaps": 4,  # a gap of up to this many empty periods counts as a gap
     "student_start": 1,  # preferred first period (1-based)
 }
@@ -32,6 +32,15 @@ LABELS = {
     "student_gaps": N_("Students: gaps"), "student_start": N_("Students: preferred first period"),
     "course_blocks": N_("Course: lesson blocks"),
 }
+
+OLD_DAYS = {"teacher_days": 1, "student_days": 6}  # the original's: files before io.VERSION 2 mean them when they store no value
+
+
+def defaults(doc: Document) -> dict:
+    """PARAMS for this document. Teachers and classes may have lessons every school day unless a limit is set
+    (the original's teacher limit of 1 flagged nearly every teacher, so warnings on good timetables got ignored;
+    its student limit of 6 meant nothing in a 5-day week). A limit at or above the number of days never applies."""
+    return {**PARAMS, "teacher_days": len(doc.days), "student_days": len(doc.days)}
 
 
 def label(key: str) -> str:
@@ -61,7 +70,7 @@ def _runs(terms: list[int]) -> list[list[int]]:
 
 
 def score(doc: Document, params: dict | None = None, weights: dict | None = None) -> list[Penalty]:
-    P, W = {**PARAMS, **doc.params, **(params or {})}, {**WEIGHTS, **doc.weights, **(weights or {})}
+    P, W = {**defaults(doc), **doc.params, **(params or {})}, {**WEIGHTS, **doc.weights, **(weights or {})}
     out: list[Penalty] = []
 
     def add(key, subject, n, why):

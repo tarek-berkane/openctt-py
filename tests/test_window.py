@@ -7,7 +7,7 @@ from PySide6.QtCore import QMimeData, QPointF, QSettings, Qt
 from PySide6.QtGui import QDragMoveEvent, QDropEvent
 from PySide6.QtWidgets import QApplication, QDialogButtonBox, QFileDialog, QMessageBox
 
-from octt import io
+from octt import io, ops
 from octt.demo import demo
 from octt.model import Document, Placement
 from octt import views
@@ -191,6 +191,15 @@ def test_open_invalid_file_reports_instead_of_crashing():
     assert shown and "not a valid timetable" in shown[0] and w.doc.institution == "Demo School"
 
 
+def test_original_file_named_json_is_imported_not_overwritten():
+    from tests.test_octt_import import XML
+    f = Path(tempfile.mkdtemp()) / "old.json"
+    f.write_text(XML, encoding="utf-8")
+    w = window()
+    w.open(str(f))
+    assert w.doc.institution == "École X" and w.path is None  # Save will ask for a new file
+
+
 def test_recent_files_are_deduplicated_and_capped():
     r = []
     for i in range(10):
@@ -247,6 +256,19 @@ def test_properties_edit_is_undoable_and_resizes_the_grid():
     w.undo.undo()
     assert (w.doc.days, w.doc.terms, w.grid.columnCount(), w.grid.rowCount()) == (days, terms, len(days), len(terms))
 
+
+def test_delete_class_is_refused_while_it_has_courses_then_works_and_undoes():
+    w = window(demo())
+    pick_class(w, 1)
+    w.delete_selected()
+    assert 1 in w.doc.eps  # 5A still has courses: refused with a status message
+    for c in [c.id for c in w.doc.courses.values() if c.ep_id == 1]:
+        w.apply("x", lambda d, c=c: ops.delete_course(d, c))
+    pick_class(w, 1)
+    w.delete_selected()
+    assert 1 not in w.doc.eps and 1 not in w.ep_items
+    w.undo.undo()
+    assert 1 in w.doc.eps and 1 in w.ep_items
 
 def test_locking_pins_a_lesson_against_moves_removal_and_the_solver():
     w = window(demo())

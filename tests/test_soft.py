@@ -1,6 +1,6 @@
 from octt.demo import demo
 from octt.model import Course, Placement
-from octt.rules.soft import score, total
+from octt.rules.soft import defaults, score, total
 
 
 def keys(d, **kw):
@@ -20,10 +20,13 @@ def test_empty_and_perfect_timetable_score_zero():
     assert score(d) == []
 
 
-def test_teacher_days_limit_is_one_by_default():
-    d = doc_with((1, 0, 0, 1), (3, 0, 1, 1))  # Ada teaches Mon and Tue
-    assert "teacher_days" in keys(d)
-    assert "teacher_days" not in keys(d, params={"teacher_days": 2})
+def test_teachers_may_work_every_day_by_default():
+    d = doc_with(*[(1 + 2 * (day % 2), 0, day, 1) for day in range(5)])  # Ada teaches all 5 days
+    assert "teacher_days" not in keys(d)
+    assert "teacher_days" in keys(d, params={"teacher_days": 4})
+    assert "student_days" not in keys(d) and "student_days" in keys(d, params={"student_days": 2})  # 5A: Mon, Wed, Fri
+    d.days.append("Sat")  # the defaults follow the week
+    assert defaults(d)["teacher_days"] == defaults(d)["student_days"] == 6
 
 
 def test_continuous_and_daily_hours():

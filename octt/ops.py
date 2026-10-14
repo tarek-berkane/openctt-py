@@ -4,9 +4,11 @@
 # the License, or (at your option) any later version. See the LICENSE file.
 """Document edits + validation (no Qt). Dialogs and the window both go through trial()/audit()."""
 import copy
+from collections import Counter
 
 from octt.i18n import N_, t as tr
 from octt.model import Course, Document, Ep, Epg, Room, Teacher
+from octt.rules.hard import broken_hold_together
 from octt.rules.place import placement_problems
 from octt.rules.soft import STUDENT_KEYS, TEACHER_KEYS, label
 
@@ -61,6 +63,10 @@ def add_ep(doc: Document, epg_id: int, name: str) -> None:
     doc.eps[e] = Ep(e, name, epg_id)
 
 
+def save_group(doc: Document, g: Epg) -> None:
+    doc.epgs[g.id] = g
+
+
 def save_teacher(doc: Document, t: Teacher) -> None:
     doc.teachers[t.id] = t
 
@@ -92,6 +98,20 @@ def delete_teacher(doc: Document, tid: int) -> None:
     del doc.teachers[tid]
 
 
+def delete_ep(doc: Document, eid: int) -> None:
+    n = sum(c.ep_id == eid for c in doc.courses.values())
+    if n:
+        raise ValueError(tr("{ep} has {n} course(s)", ep=doc.eps[eid].name, n=n))
+    del doc.eps[eid]
+
+
+def delete_group(doc: Document, gid: int) -> None:
+    n = sum(e.epg_id == gid for e in doc.eps.values())
+    if n:
+        raise ValueError(tr("{group} has {n} class(es)", group=doc.epgs[gid].name, n=n))
+    del doc.epgs[gid]
+
+
 def delete_room(doc: Document, rid: int) -> None:
     if any(p.room_id == rid for p in doc.placements):
         raise ValueError(tr("{room} holds placed lessons", room=doc.rooms[rid].name))
@@ -109,6 +129,54 @@ def delete_course(doc: Document, cid: int) -> None:
     for c in doc.courses.values():
         c.hold_together = [x for x in c.hold_together if x != cid]
     del doc.courses[cid]
+
+
+def _free_name(taken: set[str], name: str) -> str:
+    """'Maths' -> 'Maths (2)', or the next number not in `taken` (compared like audit does: trimmed, casefolded)."""
+    taken = {t.strip().casefold() for t in taken}
+    n = 2
+    while f"{name} ({n})".casefold() in taken:
+        n += 1
+    return f"{name} ({n})"
+
+
+def duplicate(doc: Document, kind: str, id_: int) -> int:
+    """Copy a group / class / teacher / room / course under a free name. Returns the new id.
+    A class brings copies of its courses; a group brings copies of its classes (same names) and their courses."""
+    table = {"epg": doc.epgs, "teacher": doc.teachers, "room": doc.rooms, "course": doc.courses, "ep": doc.eps}[kind]
+    new = copy.deepcopy(table[id_])
+    new.id = next_id(table)
+    if kind == "course":
+        new.hold_together = []  # its partners would not list it back
+        taken = {c.name for c in doc.courses.values() if c.ep_id == new.ep_id and c.group == new.group}
+    elif kind == "ep":
+        taken = {e.name for e in doc.eps.values() if e.epg_id == new.epg_id}
+    else:
+        taken = {x.name for x in table.values()}
+    new.name = _free_name(taken, new.name)
+    table[new.id] = new
+    if kind == "ep":
+        _copy_courses(doc, {id_: new.id})
+    elif kind == "epg":
+        eps = {}
+        for e in [e for e in doc.eps.values() if e.epg_id == id_]:
+            eps[e.id] = eid = next_id(doc.eps)
+            doc.eps[eid] = copy.deepcopy(e)
+            doc.eps[eid].id, doc.eps[eid].epg_id = eid, new.id
+        _copy_courses(doc, eps)
+    return new.id
+
+
+def _copy_courses(doc: Document, eps: dict[int, int]) -> None:
+    """Copy every course of the classes in `eps` (old class id -> its copy). Hold-together partners that were
+    copied too follow the copies; partners outside the copy stay with the original."""
+    ids = {}
+    for c in [c for c in doc.courses.values() if c.ep_id in eps]:
+        ids[c.id] = cid = next_id(doc.courses)
+        doc.courses[cid] = copy.deepcopy(c)
+        doc.courses[cid].id, doc.courses[cid].ep_id = cid, eps[c.ep_id]
+    for old, cid in ids.items():
+        doc.courses[cid].hold_together = [ids[h] for h in doc.courses[old].hold_together if h in ids]
 
 
 def _dups(pairs) -> list[str]:
@@ -144,7 +212,7 @@ def audit(doc: Document) -> list[str]:
             out.append(tr("{name}: needs a class and a teacher", name=c.name))
         if c.lessons < 1:
             out.append(tr("{name}: needs at least 1 lesson per week", name=c.name))
-        if c.id in c.hold_together or any(p not in doc.courses for p in c.hold_together):
+        if broken_hold_together(doc, c):
             out.append(tr("{name}: bad hold-together list", name=c.name))
         if c.allowed_rooms is not None and not c.allowed_rooms:
             out.append(tr("{name}: restricted to no rooms", name=c.name))
@@ -162,8 +230,9 @@ def audit(doc: Document) -> list[str]:
             out.append(tr("{name}: lesson blocks must be [size >= 1, 1 <= min blocks <= max blocks]", name=c.name))
     if out:  # placement checks assume the references above are sound
         return out
-    out += [tr("{name}: {n} more lesson(s) placed than allowed", name=c.name, n=-doc.unallocated(c.id))
-            for c in doc.courses.values() if doc.unallocated(c.id) < 0]
+    placed = Counter(p.course_id for p in doc.placements)
+    out += [tr("{name}: {n} more lesson(s) placed than allowed", name=c.name, n=placed[c.id] - c.lessons)
+            for c in doc.courses.values() if placed[c.id] > c.lessons]
     return out or placement_problems(doc)
 
 

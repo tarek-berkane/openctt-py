@@ -16,6 +16,13 @@ def fits_room(doc: Document, course_id: int, room) -> bool:
                     for c in group))
 
 
+def broken_hold_together(doc: Document, c) -> bool:
+    """Every partner must list the same group: A-B plus B-C without A-C would let C be placed apart from B."""
+    group = {c.id, *c.hold_together}
+    return c.id in c.hold_together or any(
+        p not in doc.courses or {p, *doc.courses[p].hold_together} != group for p in c.hold_together)
+
+
 def candidate_rooms(doc: Document, course_id: int, term: int, day: int) -> list[int]:
     """Rooms that fit the course (+ hold-together partners) and are free in the slot."""
     busy = {p.room_id for p in doc.placements if (p.term, p.day) == (term, day)}

@@ -167,7 +167,11 @@ def test_arabic_mirrors_the_layout_and_the_grid():
         assert g.columnViewportPosition(0) > g.columnViewportPosition(g.columnCount() - 1)  # first day on the right
         sp = w.split
         assert sp.widget(0).geometry().left() > sp.widget(1).geometry().left()  # side panel on the right
-        assert w.title_lbl.alignment() & Qt.AlignLeading and w.title_lbl.text().startswith("السنة")
+        assert w.title_lbl.text().startswith("السنة")
+        w.title_lbl.setText("Grade 7 · 7A")  # Latin names must sit on the right too, not follow their own script
+        img = w.title_lbl.grab().toImage()
+        ink = [x for x in range(img.width()) for y in range(img.height()) if img.pixelColor(x, y).lightness() < 90]
+        assert ink and min(ink) > img.width() / 2
         m = w.left_lay.contentsMargins()
         assert m.left() == 0 and m.right() > 0  # no gap at the window edge, gap at the splitter
     w2 = window(arabic_doc())

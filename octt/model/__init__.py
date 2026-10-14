@@ -77,7 +77,7 @@ class Document:
     rooms: dict[int, Room] = field(default_factory=dict)
     courses: dict[int, Course] = field(default_factory=dict)
     placements: list[Placement] = field(default_factory=list)
-    params: dict = field(default_factory=dict)  # soft-constraint limits that differ from rules.soft.PARAMS
+    params: dict = field(default_factory=dict)  # soft-constraint limits that differ from rules.soft.defaults(doc)
     weights: dict = field(default_factory=dict)  # ... and weights that differ from rules.soft.WEIGHTS
 
     def unallocated(self, course_id: int) -> int:

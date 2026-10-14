@@ -5,7 +5,7 @@
 """Turns a drop into a concrete change. Hold-together partners always move as one unit."""
 from octt.i18n import t as tr
 from octt.model import Document, Placement
-from octt.rules.hard import candidate_rooms, violations
+from octt.rules.hard import candidate_rooms, fits_room, violations
 
 
 def _group(doc: Document, cid: int) -> list[int]:
@@ -67,15 +67,23 @@ def bad_slots(doc: Document, cid: int, src: tuple[int, int] | None, room: int | 
 
 def placement_problems(doc: Document) -> list[str]:
     """Every placed lesson re-checked against the hard rules, as if it were lifted and dropped again."""
-    saved, out = doc.placements, []
+    saved, out, by_slot = doc.placements, [], {}
+    for q in saved:
+        by_slot.setdefault((q.term, q.day), []).append(q)
     try:
         for p in saved:
-            doc.placements = saved  # plan_unplace reads doc.placements, so undo the previous lift first
+            # the hard rules only read the lesson's own slot, so lift it from that slot's lessons, not the whole list
+            doc.placements = by_slot[p.term, p.day]
             lifted = plan_unplace(doc, p.course_id, p.term, p.day)
-            doc.placements = [q for q in saved if q not in lifted]
-            errs = violations(doc, p.course_id, p.term, p.day)
-            if not errs and p.room_id not in candidate_rooms(doc, p.course_id, p.term, p.day):
-                errs = [tr("room {room} no longer suitable", room=doc.rooms[p.room_id].name)]
+            doc.placements = [q for q in doc.placements if q not in lifted]
+            errs = violations(doc, p.course_id, p.term, p.day, rooms=False)
+            room = doc.rooms[p.room_id]
+            if not (fits_room(doc, p.course_id, room) and (p.term, p.day) not in room.blocked
+                    and all(q.room_id != room.id for q in doc.placements)):  # its own room still works: skip the full room search
+                if not candidate_rooms(doc, p.course_id, p.term, p.day):
+                    errs.append(tr("no free room fits"))
+                elif not errs:
+                    errs = [tr("room {room} no longer suitable", room=room.name)]
             out += [tr("{course} @ {day} {term}: {why}", course=doc.courses[p.course_id].name, day=doc.days[p.day],
                       term=doc.terms[p.term], why=e) for e in errs]
     finally:

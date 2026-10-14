@@ -25,8 +25,8 @@ from ortools.sat.python import cp_model
 from octt.diagnose import explain
 from octt.i18n import t as tr
 from octt.model import Document, Placement
-from octt.rules.hard import fits_room, violations
-from octt.rules.soft import BLOCKS, BLOCKS_DEFAULT, PARAMS, WEIGHTS, score, total
+from octt.rules.hard import broken_hold_together, fits_room, violations
+from octt.rules.soft import BLOCKS, BLOCKS_DEFAULT, WEIGHTS, defaults, score, total
 
 SCALE = 1000
 
@@ -54,6 +54,9 @@ class Unit:
 
 
 def _units(doc: Document):
+    bad = [c for c in doc.courses.values() if broken_hold_together(doc, c)]
+    if bad:
+        return None, "\n".join(tr("{name}: bad hold-together list", name=c.name) for c in bad)
     units, seen = [], set()
     for c in sorted(doc.courses.values(), key=lambda c: c.id):
         if c.id in seen or doc.unallocated(c.id) <= 0:
@@ -102,7 +105,7 @@ def solve_many(doc: Document, keep: bool = True, count: int = 1, time_limit: flo
     keep=True: placed lessons stay and only the unallocated ones are solved; False: unlocked lessons are discarded.
     `time_limit` is per solution. `progress(penalty)` fires on every improvement, `found(result)` per finished solution
     (both from the solver thread). Failure is always a single non-ok Result."""
-    P, W = {**PARAMS, **doc.params, **(params or {})}, {**WEIGHTS, **doc.weights, **(weights or {})}
+    P, W = {**defaults(doc), **doc.params, **(params or {})}, {**WEIGHTS, **doc.weights, **(weights or {})}
     work = copy.deepcopy(doc)
     removes = [] if keep else [p for p in work.placements if not p.locked]
     if not keep:

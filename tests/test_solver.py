@@ -119,6 +119,18 @@ def test_unequal_hold_together_is_rejected():
     assert solve(d, keep=False).status == "INVALID"
 
 
+def test_hold_together_chain_is_rejected():
+    d = demo()  # chain 1-3, 3-2 without 1-2 would let course 2 be placed apart from 3
+    d.courses[1].hold_together, d.courses[3].hold_together, d.courses[2].hold_together = [3], [1, 2], [3]
+    d.placements = []
+    assert solve(d, keep=False).status == "INVALID"
+    assert any("bad hold-together" in m for m in ops.audit(d))
+    d = demo()
+    ops.save_course(d, Course(1, "Math", 1, 1, 3, 25, hold_together=[3]))
+    assert ops.trial(d, lambda x: ops.save_course(x, Course(2, x.courses[2].name, x.courses[2].ep_id,
+                                                             x.courses[2].teacher_id, hold_together=[3])))
+
+
 def test_solve_many_gives_valid_distinct_timetables():
     from octt.solver import solve_many
     d = demo()

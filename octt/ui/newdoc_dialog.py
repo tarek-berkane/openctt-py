@@ -7,10 +7,9 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QLineEdit, QSpinBox, QTimeEdit, QVBoxLayout, QWidget)
 
 from octt import ops
-from octt.i18n import N_, language, t as tr
+from octt.i18n import WEEK, language, t as tr
 from octt.model import Document
 
-WEEK = [N_("Mon"), N_("Tue"), N_("Wed"), N_("Thu"), N_("Fri"), N_("Sat"), N_("Sun")]  # stored translated: day names are document data
 
 
 class NewDocumentDialog(QDialog):

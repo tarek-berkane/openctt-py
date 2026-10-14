@@ -2,44 +2,21 @@
 # This program is free software; you can redistribute it and/or modify it under the terms of the
 # GNU General Public License as published by the Free Software Foundation; either version 2 of
 # the License, or (at your option) any later version. See the LICENSE file.
+from collections.abc import Callable
+from dataclasses import dataclass
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-                               QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QSpinBox, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout, QWidget)
+                               QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                               QSpinBox, QVBoxLayout, QWidget)
 
 from octt import ops
 from octt.i18n import N_, t as tr
-from octt.model import Course, Document, Ep, Room, Teacher
-from octt.rules.soft import BLOCKS, BLOCKS_DEFAULT, PARAMS, STUDENT_KEYS, TEACHER_KEYS
+from octt.model import Course, Document, Ep, Epg, Room, Teacher
+from octt.rules.soft import BLOCKS, BLOCKS_DEFAULT, STUDENT_KEYS, TEACHER_KEYS, defaults
+from octt.ui.slots import Slots
 
 CHECKABLE = Qt.ItemIsUserCheckable | Qt.ItemIsEnabled
-
-
-class Slots(QTableWidget):
-    """Allowed-time-slots grid: checked = allowed. Click a header to flip a whole day / period."""
-
-    def __init__(self, doc: Document, blocked: set):
-        super().__init__(len(doc.terms), len(doc.days))
-        self.setHorizontalHeaderLabels(doc.days)
-        self.setVerticalHeaderLabels(doc.terms)
-        self.setMinimumHeight(40 + 30 * len(doc.terms))
-        for t in range(self.rowCount()):
-            for d in range(self.columnCount()):
-                it = QTableWidgetItem()
-                it.setFlags(CHECKABLE)
-                it.setCheckState(Qt.Unchecked if (t, d) in blocked else Qt.Checked)
-                self.setItem(t, d, it)
-        self.horizontalHeader().sectionClicked.connect(lambda d: self._flip([(t, d) for t in range(self.rowCount())]))
-        self.verticalHeader().sectionClicked.connect(lambda t: self._flip([(t, d) for d in range(self.columnCount())]))
-
-    def _flip(self, cells):
-        on = all(self.item(t, d).checkState() == Qt.Checked for t, d in cells)
-        for t, d in cells:
-            self.item(t, d).setCheckState(Qt.Unchecked if on else Qt.Checked)
-
-    def blocked(self) -> set:
-        return {(t, d) for t in range(self.rowCount()) for d in range(self.columnCount())
-                if self.item(t, d).checkState() != Qt.Checked}
 
 
 class Checklist(QListWidget):
@@ -81,7 +58,7 @@ class Limits(QWidget):
 
     def __init__(self, doc: Document, keys: tuple, current: dict):
         super().__init__()
-        base = {**PARAMS, **doc.params}
+        base = {**defaults(doc), **doc.params}
         self.rows = {}
         form = QFormLayout(self)
         form.setContentsMargins(0, 0, 0, 0)
@@ -123,40 +100,81 @@ class BlocksEditor(QWidget):
         return [s.value() for s in self.spins] if self.on.isChecked() else None
 
 
-class _Dialog(QDialog):
-    """Validates through ops.trial() so the dialog stays open until the edit is acceptable."""
+class Editor(QWidget):
+    """The form for one entity. result() builds the entity from the widgets; save(doc, entity) stores it (an ops
+    function). The same form sits in a dialog (EditDialog) or in the data manager."""
+    title = ""  # N_ key: "Teacher", "Room", ...
 
-    def __init__(self, parent, doc: Document, title: str):
-        super().__init__(parent)
-        self.doc, self.entity = doc, None
-        self.setWindowTitle(title)
-        self.form = QFormLayout()
-        self.err = QLabel()
-        self.err.setStyleSheet("color: #b00020")
-        self.err.setWordWrap(True)
-        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        box.accepted.connect(self.accept)
-        box.rejected.connect(self.reject)
-        lay = QVBoxLayout(self)
-        lay.addLayout(self.form)
-        lay.addWidget(self.err)
-        lay.addWidget(box)
+    def __init__(self, doc: Document):
+        super().__init__()
+        self.doc = doc
+        self.form = QFormLayout(self)
+        self.form.setContentsMargins(0, 0, 0, 0)
 
-    def accept(self):
-        entity = self.result()
-        problems = ops.trial(self.doc, lambda d: self.save(d, entity))
-        if problems:
-            self.err.setText("\n".join(problems[:4]))
-        else:
-            self.entity = entity
-            super().accept()
+    def changed(self, slot) -> None:
+        """Call `slot` whenever the user changes any field."""
+        for w in self.findChildren(QLineEdit):
+            w.textChanged.connect(slot)
+        for w in self.findChildren(QSpinBox):
+            w.valueChanged.connect(slot)
+        for w in self.findChildren(QComboBox):
+            w.currentIndexChanged.connect(slot)
+        for w in self.findChildren(QCheckBox):
+            w.toggled.connect(slot)
+        for w in self.findChildren(QListWidget):
+            w.itemChanged.connect(slot)
+        for w in self.findChildren(Slots):
+            w.changed.connect(slot)
 
 
-class TeacherDialog(_Dialog):
+class GroupEditor(Editor):
+    title = N_("Group")
+    save = staticmethod(ops.save_group)
+
+    def __init__(self, doc: Document, g: Epg | None = None):
+        super().__init__(doc)
+        self.id = g.id if g else ops.next_id(doc.epgs)
+        self.name = QLineEdit(g.name if g else "")
+        self.name.setPlaceholderText(tr("a grade, year or faculty"))
+        self.slots = Slots(doc, g.blocked if g else set())
+        self.form.addRow(tr("Name"), self.name)
+        self.form.addRow(tr("Available"), self.slots)
+
+    def result(self) -> Epg:
+        return Epg(self.id, self.name.text().strip(), self.slots.blocked())
+
+
+class EpEditor(Editor):
+    """A class: name, its group, availability, and its own student soft-constraint limits."""
+    title = N_("Class")
+    save = staticmethod(ops.save_ep)
+
+    def __init__(self, doc: Document, e: Ep | None = None, epg_id: int | None = None):
+        super().__init__(doc)
+        self.id = e.id if e else ops.next_id(doc.eps)
+        self.name = QLineEdit(e.name if e else "")
+        self.name.setPlaceholderText(tr("e.g. 5A"))
+        self.epg = QComboBox()
+        for g in doc.epgs.values():
+            self.epg.addItem(g.name, g.id)
+        self.epg.setCurrentIndex(max(self.epg.findData(e.epg_id if e else epg_id), 0))
+        self.slots = Slots(doc, e.blocked if e else set())
+        self.limits = Limits(doc, STUDENT_KEYS, e.limits if e else {})
+        self.form.addRow(tr("Name"), self.name)
+        self.form.addRow(tr("Group"), self.epg)
+        self.form.addRow(tr("Available"), self.slots)
+        self.form.addRow(tr("Override limits"), self.limits)
+
+    def result(self) -> Ep:
+        return Ep(self.id, self.name.text().strip(), self.epg.currentData(), self.slots.blocked(), self.limits.value())
+
+
+class TeacherEditor(Editor):
+    title = N_("Teacher")
     save = staticmethod(ops.save_teacher)
 
-    def __init__(self, parent, doc: Document, t: Teacher | None = None):
-        super().__init__(parent, doc, tr("Teacher"))
+    def __init__(self, doc: Document, t: Teacher | None = None):
+        super().__init__(doc)
         self.id = t.id if t else ops.next_id(doc.teachers)
         self.name = QLineEdit(t.name if t else "")
         self.rooms = RoomPicker(doc, t.allowed_rooms if t else None)
@@ -172,11 +190,12 @@ class TeacherDialog(_Dialog):
                        self.limits.value())
 
 
-class RoomDialog(_Dialog):
+class RoomEditor(Editor):
+    title = N_("Room")
     save = staticmethod(ops.save_room)
 
-    def __init__(self, parent, doc: Document, r: Room | None = None):
-        super().__init__(parent, doc, tr("Room"))
+    def __init__(self, doc: Document, r: Room | None = None):
+        super().__init__(doc)
         self.id = r.id if r else ops.next_id(doc.rooms)
         self.name = QLineEdit(r.name if r else "")
         self.cap = QSpinBox(minimum=0, maximum=100000, value=r.capacity if r else 30)
@@ -189,11 +208,12 @@ class RoomDialog(_Dialog):
         return Room(self.id, self.name.text().strip(), self.cap.value(), self.slots.blocked())
 
 
-class CourseDialog(_Dialog):
+class CourseEditor(Editor):
+    title = N_("Course")
     save = staticmethod(ops.save_course)
 
-    def __init__(self, parent, doc: Document, c: Course | None = None, ep_id: int | None = None):
-        super().__init__(parent, doc, tr("Course"))
+    def __init__(self, doc: Document, c: Course | None = None, ep_id: int | None = None):
+        super().__init__(doc)
         self.id = c.id if c else ops.next_id(doc.courses)
         self.name = QLineEdit(c.name if c else "")
         self.ep = QComboBox()
@@ -217,7 +237,7 @@ class CourseDialog(_Dialog):
         self.blocks = BlocksEditor(self.lessons.value(), c.blocks if c else None)
         for label, w in ((tr("Name"), self.name), (tr("Class"), self.ep), (tr("Teacher"), self.teacher),
                          (tr("Lessons / week"), self.lessons), (tr("Students"), self.students),
-                         (tr("Group"), self.group), (tr("Rooms"), self.rooms), (tr("Hold together with"), self.ht),
+                         (tr("Sub-group"), self.group), (tr("Rooms"), self.rooms), (tr("Hold together with"), self.ht),
                          (tr("Lesson blocks"), self.blocks)):
             self.form.addRow(label, w)
 
@@ -225,6 +245,56 @@ class CourseDialog(_Dialog):
         return Course(self.id, self.name.text().strip(), self.ep.currentData(), self.teacher.currentData(),
                       self.lessons.value(), self.students.value(), self.group.text().strip(),
                       self.rooms.value(), sorted(self.ht.value()), self.blocks.value())
+
+
+@dataclass(frozen=True)
+class Kind:
+    """Everything the window and the data manager need to know about one kind of entity."""
+    editor: type  # Editor subclass, called as editor(doc, entity_or_None, **defaults)
+    table: str  # the Document attribute holding them
+    add: str  # N_ undo texts
+    edit: str
+    delete: str
+    remove: Callable  # ops.delete_*(doc, id)
+
+
+KINDS = {
+    "epg": Kind(GroupEditor, "epgs", N_("Add group"), N_("Edit group"), N_("Delete group"), ops.delete_group),
+    "ep": Kind(EpEditor, "eps", N_("Add class"), N_("Edit class"), N_("Delete class"), ops.delete_ep),
+    "teacher": Kind(TeacherEditor, "teachers", N_("Add teacher"), N_("Edit teacher"), N_("Delete teacher"), ops.delete_teacher),
+    "room": Kind(RoomEditor, "rooms", N_("Add room"), N_("Edit room"), N_("Delete room"), ops.delete_room),
+    "course": Kind(CourseEditor, "courses", N_("Add course"), N_("Edit course"), N_("Delete course"), ops.delete_course),
+}
+
+
+class EditDialog(QDialog):
+    """An Editor in a dialog. Validates through ops.trial(), so it stays open until the edit is acceptable;
+    then `entity` holds the result."""
+
+    def __init__(self, parent, editor: Editor):
+        super().__init__(parent)
+        self.editor, self.entity = editor, None
+        self.setWindowTitle(tr(editor.title))
+        self.err = QLabel()
+        self.err.setStyleSheet("color: #b00020")
+        self.err.setWordWrap(True)
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addWidget(editor)
+        lay.addWidget(self.err)
+        lay.addWidget(box)
+
+    def accept(self):
+        ed = self.editor
+        entity = ed.result()
+        problems = ops.trial(ed.doc, lambda d: ed.save(d, entity))
+        if problems:
+            self.err.setText("\n".join(problems[:4]))
+        else:
+            self.entity = entity
+            super().accept()
 
 
 # key -> (label, limit label or None). Order = display order, grouped by the key prefix.
@@ -247,31 +317,35 @@ class SettingsDialog(QDialog):
 
     def __init__(self, parent, doc: Document):
         super().__init__(parent)
-        from octt.rules.soft import PARAMS, WEIGHTS
+        from octt.rules.soft import WEIGHTS
 
         self.setWindowTitle(tr("Soft-constraint settings"))
-        self.defaults = (PARAMS, WEIGHTS)
+        self.defaults = (defaults(doc), WEIGHTS)
         self.limit, self.weight = {}, {}
         lay = QVBoxLayout(self)
+        grid = QGridLayout()  # one grid for all sections, so every limit and weight box lines up
+        lay.addLayout(grid)
+        row = 0
         for prefix, title in GROUPS.items():
-            box, form = QGroupBox(tr(title)), QFormLayout()
-            box.setLayout(form)
+            head = QLabel(f"<b>{tr(title)}</b>")
+            head.setContentsMargins(0, 10 if row else 0, 0, 2)
+            grid.addWidget(head, row, 0, 1, 4)
+            row += 1
             for key, (label, unit) in SETTINGS_ROWS.items():
                 if not key.startswith(prefix):
                     continue
-                row = QWidget()
-                h = QHBoxLayout(row)
-                h.setContentsMargins(0, 0, 0, 0)
+                lbl = QLabel(tr(label))
+                lbl.setIndent(12)
+                grid.addWidget(lbl, row, 0)
                 if unit:
                     hi = len(doc.terms) if key == "student_start" else 99
                     self.limit[key] = QSpinBox(minimum=1 if key == "student_start" else 0, maximum=hi,
                                                suffix=f" {tr(unit)}")
-                    h.addWidget(self.limit[key])
-                h.addWidget(QLabel(tr("weight")))
+                    grid.addWidget(self.limit[key], row, 1)
+                grid.addWidget(QLabel(tr("weight")), row, 2)
                 self.weight[key] = QDoubleSpinBox(minimum=0, maximum=1000, decimals=2, singleStep=0.5)
-                h.addWidget(self.weight[key])
-                form.addRow(tr(label), row)
-            lay.addWidget(box)
+                grid.addWidget(self.weight[key], row, 3)
+                row += 1
         lay.addWidget(QLabel(tr("Weight 0 = off. Lower total penalty is better; the solver minimises it.")))
         self.box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel | QDialogButtonBox.RestoreDefaults)
         self.box.accepted.connect(self.accept)
@@ -292,21 +366,3 @@ class SettingsDialog(QDialog):
         P, W = self.defaults
         return ({k: w.value() for k, w in self.limit.items() if w.value() != P[k]},
                 {k: w.value() for k, w in self.weight.items() if w.value() != W[k]})
-
-
-class EpDialog(_Dialog):
-    """Edit a class: name, availability, and its own student soft-constraint limits."""
-    save = staticmethod(ops.save_ep)
-
-    def __init__(self, parent, doc: Document, e: Ep):
-        super().__init__(parent, doc, tr("Class"))
-        self.e = e
-        self.name = QLineEdit(e.name)
-        self.slots = Slots(doc, e.blocked)
-        self.limits = Limits(doc, STUDENT_KEYS, e.limits)
-        self.form.addRow(tr("Name"), self.name)
-        self.form.addRow(tr("Available"), self.slots)
-        self.form.addRow(tr("Override limits"), self.limits)
-
-    def result(self) -> Ep:
-        return Ep(self.e.id, self.name.text().strip(), self.e.epg_id, self.slots.blocked(), self.limits.value())

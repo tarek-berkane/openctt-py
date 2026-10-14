@@ -1,2 +1,5 @@
-PySide6
-ortools
+# Pinned to the versions the test suite runs on (Python 3.14); patch releases only.
+# Older PySide6 is untested: the free-time finder needs at least 6.4 (QFormLayout.setRowVisible).
+PySide6~=6.12.0
+# The solver's results can change between OR-Tools releases.
+ortools~=9.15.6755

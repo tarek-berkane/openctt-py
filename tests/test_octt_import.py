@@ -58,7 +58,7 @@ def test_original_file_imports_with_its_structure():
 
 def test_original_soft_constraints_become_overrides():
     d = load()
-    assert d.params == {"student_daily": 5} and d.eps[1].limits["student_daily"] == 3
+    assert d.params == {"student_daily": 5, "teacher_days": 1} and d.eps[1].limits["student_daily"] == 3
     assert d.teachers[9].limits == {"teacher_days": 3} and d.courses[12].blocks == [2, 1, 1]
 
 

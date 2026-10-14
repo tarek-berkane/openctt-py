@@ -77,6 +77,12 @@ def test_deletes():
     ops.delete_course(d, 1)
     assert d.placements == [] and 1 not in d.courses
     assert ops.audit(d) == []
+    assert ops.trial(d, lambda x: ops.delete_ep(x, 1))  # still has courses
+    assert ops.trial(d, lambda x: ops.delete_group(x, 1))  # still has classes
+    for c in [c.id for c in d.courses.values() if c.ep_id == 1]:
+        ops.delete_course(d, c)
+    ops.delete_ep(d, 1)
+    assert 1 not in d.eps and ops.audit(d) == []
 
 
 def test_new_course_via_ids_and_state_undo():

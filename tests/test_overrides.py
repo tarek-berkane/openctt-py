@@ -10,7 +10,7 @@ from octt.demo import demo
 from octt.model import Course, Document, Ep, Epg, Placement, Room, Teacher
 from octt.rules.soft import score, total
 from octt.solver import solve
-from octt.ui.dialogs import BlocksEditor, CourseDialog, EpDialog, Limits, TeacherDialog
+from octt.ui.dialogs import BlocksEditor, CourseEditor, EditDialog, EpEditor, Limits, TeacherEditor
 
 APP = QApplication.instance() or QApplication([])
 
@@ -22,6 +22,7 @@ def keys(d):
 def test_teacher_override_replaces_global_limit_for_that_teacher_only():
     d = demo()
     d.placements = [Placement(1, 0, 0, 1), Placement(3, 0, 1, 1), Placement(2, 0, 0, 2)]  # Ada Mon+Tue, Alan Mon
+    d.params = {"teacher_days": 1}
     assert ("teacher_days", "Ada Lovelace") in keys(d)
     d.teachers[1].limits = {"teacher_days": 2}
     assert ("teacher_days", "Ada Lovelace") not in keys(d)
@@ -106,26 +107,26 @@ def test_dialogs_edit_overrides():
     lim.rows["teacher_daily"][0].setChecked(True)
     assert lim.value() == {"teacher_days": 3, "teacher_daily": PARAMS_DAILY()}
 
-    dlg = TeacherDialog(None, d, d.teachers[1])
-    dlg.limits.rows["teacher_continuous"][0].setChecked(True)
-    dlg.limits.rows["teacher_continuous"][1].setValue(2)
+    dlg = EditDialog(None, TeacherEditor(d, d.teachers[1]))
+    dlg.editor.limits.rows["teacher_continuous"][0].setChecked(True)
+    dlg.editor.limits.rows["teacher_continuous"][1].setValue(2)
     dlg.accept()
     assert dlg.entity.limits == {"teacher_continuous": 2}
 
-    ed = EpDialog(None, d, d.eps[1])
-    ed.name.setText("5A+")
-    ed.limits.rows["student_start"][0].setChecked(True)
-    ed.limits.rows["student_start"][1].setValue(2)
+    ed = EditDialog(None, EpEditor(d, d.eps[1]))
+    ed.editor.name.setText("5A+")
+    ed.editor.limits.rows["student_start"][0].setChecked(True)
+    ed.editor.limits.rows["student_start"][1].setValue(2)
     ed.accept()
     assert ed.entity.name == "5A+" and ed.entity.limits == {"student_start": 2} and ed.entity.epg_id == 1
 
-    cd = CourseDialog(None, d, d.courses[1])
-    assert cd.blocks.value() is None
-    cd.blocks.on.setChecked(True)
-    cd.blocks.spins[1].setValue(3)  # min blocks 3 > max blocks 1 -> rejected inside the dialog
+    cd = EditDialog(None, CourseEditor(d, d.courses[1]))
+    assert cd.editor.blocks.value() is None
+    cd.editor.blocks.on.setChecked(True)
+    cd.editor.blocks.spins[1].setValue(3)  # min blocks 3 > max blocks 1 -> rejected inside the dialog
     cd.accept()
     assert cd.entity is None and "lesson blocks" in cd.err.text()
-    cd.blocks.spins[2].setValue(3)
+    cd.editor.blocks.spins[2].setValue(3)
     cd.accept()
     assert cd.entity.blocks == [3, 3, 3]
     assert BlocksEditor(3, None).value() is None

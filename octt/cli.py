@@ -9,7 +9,7 @@ import sys
 
 from octt import ops, solver
 from octt.io import load, save
-from octt.rules.soft import PARAMS, WEIGHTS, score, total
+from octt.rules.soft import PARAMS, WEIGHTS, defaults, score, total
 
 COMMANDS = ("info", "check", "solve", "convert", "pdf", "export", "set")
 
@@ -85,7 +85,7 @@ def run(argv: list[str]) -> int:
         if a.pairs:
             _set(doc, a.pairs)
             save(doc, a.file)
-        print({**PARAMS, **doc.params}, {f"w.{k}": v for k, v in {**WEIGHTS, **doc.weights}.items()}, sep="\n")
+        print({**defaults(doc), **doc.params}, {f"w.{k}": v for k, v in {**WEIGHTS, **doc.weights}.items()}, sep="\n")
     elif a.cmd in ("pdf", "export"):
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
         from PySide6.QtWidgets import QApplication

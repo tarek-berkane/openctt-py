@@ -1,3 +1,4 @@
+import json
 import tempfile
 from pathlib import Path
 
@@ -55,6 +56,40 @@ def test_settings_roundtrip_through_json_and_old_files_load():
     assert io.load(p).params == {}
 
 
+def test_failed_save_keeps_the_old_file():
+    p = Path(tempfile.mkdtemp()) / "s.json"
+    io.save(demo(), p)
+    before = p.read_text()
+    real, io.os.replace = io.os.replace, lambda *a: (_ for _ in ()).throw(OSError("disk full"))
+    try:
+        d = demo()
+        d.institution = "changed"
+        io.save(d, p)
+        raise AssertionError("save should have failed")
+    except OSError:
+        pass
+    finally:
+        io.os.replace = real
+    assert p.read_text() == before and list(p.parent.iterdir()) == [p]  # old content, no .tmp left behind
+
+
+def test_old_files_keep_their_days_limits_where_they_can_apply():
+    p = Path(tempfile.mkdtemp()) / "s.json"
+    io.save(demo(), p)
+    assert io.load(p).params == {}  # new file: lessons allowed every school day
+    raw = json.loads(p.read_text())
+    del raw["version"]  # as written before format 2: the old defaults (teachers 1, students 6) were not stored
+    p.write_text(json.dumps(raw))
+    d = io.load(p)
+    assert d.params == {"teacher_days": 1}  # students' 6 can never apply in a 5-day week: not written in
+    assert total(score(d)) == total(score(d, params={"teacher_days": 1, "student_days": 6}))  # scores as before
+    io.save(d, p)
+    assert io.load(p).params == {"teacher_days": 1}  # stays once re-saved in the new format
+    raw["days"] = [*raw["days"], "Sat", "Sun"]
+    p.write_text(json.dumps(raw))
+    assert io.load(p).params == {"teacher_days": 1, "student_days": 6}  # in a 7-day week it can
+
+
 def test_dialog_returns_only_differences_and_resets():
     d = demo()
     dlg = SettingsDialog(None, d)
@@ -78,7 +113,7 @@ def test_settings_change_is_undoable():
     s.undo()
     assert d.params == {}
     s.redo()
-    assert d.params == {"teacher_days": 4} and PARAMS["teacher_days"] == 1
+    assert d.params == {"teacher_days": 4} and PARAMS["teacher_days"] == 7
 
 
 if __name__ == "__main__":

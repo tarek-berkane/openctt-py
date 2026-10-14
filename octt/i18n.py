@@ -47,6 +47,9 @@ def N_(msg: str) -> str:
     return msg
 
 
+WEEK = [N_("Mon"), N_("Tue"), N_("Wed"), N_("Thu"), N_("Fri"), N_("Sat"), N_("Sun")]  # stored translated: day names are document data
+
+
 def t(msg: str, **kw) -> str:
     text = catalog(_lang).get(msg, msg)
     if not kw:

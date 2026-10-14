@@ -42,12 +42,26 @@ def test_check_set_solve_pdf_convert():
 
 
 def test_bad_setting_exits():
+    own = os.path.join(tempfile.mkdtemp(), "t.json")
+    save(demo(), own)
     try:
-        cli.run(["set", f, "nope=1"])
-    except SystemExit:
+        cli.run(["set", own, "nope=1"])
+    except SystemExit as e:
+        assert "bad setting 'nope=1'" in str(e.code)
         return
     raise AssertionError
 
+
+def test_wrong_shaped_json_exits_with_a_message():
+    bad = os.path.join(tempfile.mkdtemp(), "bad.json")
+    with open(bad, "w") as fh:
+        fh.write('{"institution": "x"}')
+    try:
+        cli.run(["info", bad])
+    except SystemExit as e:
+        assert "cannot open" in str(e.code) and "year" in str(e.code)
+        return
+    raise AssertionError
 
 if __name__ == "__main__":
     for n, fn in list(globals().items()):

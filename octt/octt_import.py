@@ -5,10 +5,9 @@
 """Reads a file saved by the original (C#) OpenCTT: XML, root <open_course_timetabler>. See Misc/FileOperations.cs there."""
 import xml.etree.ElementTree as ET
 
-from octt.i18n import t as tr
+from octt.i18n import WEEK, t as tr
 from octt.model import Course, Document, Ep, Epg, Placement, Room, Teacher
-from octt.rules.soft import PARAMS
-from octt.ui.newdoc_dialog import WEEK
+from octt.rules.soft import defaults
 
 
 def _text(e, tag, default=""):
@@ -92,7 +91,9 @@ def _soft(root, doc, eps, courses):
     if sc is None:
         return
     base = {**ints(sc.find("sc_eps/sc_ep_base"), ep_tags), **ints(sc.find("sc_teachers/sc_teacher_base"), t_tags)}
-    doc.params = {k: v for k, v in base.items() if PARAMS[k] != v}
+    same = defaults(doc)
+    doc.params = {k: v for k, v in base.items()
+                  if v != same[k] and not (k.endswith("_days") and v >= len(doc.days))}  # can never apply: no limit
     for e in sc.findall("sc_eps/sc_ep"):
         if e.get("sc_ep_id") in eps:
             doc.eps[eps[e.get("sc_ep_id")]].limits = ints(e, ep_tags)
